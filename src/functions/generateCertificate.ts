@@ -2,97 +2,119 @@ import * as chromium from "chrome-aws-lambda";
 import * as path from "path";
 import * as fs from "fs";
 import * as handlebars from "handlebars";
-import * as dayjs from "dayjs"
-import { S3 } from "aws-sdk"
+import * as dayjs from "dayjs";
+import { S3 } from "aws-sdk";
 
 import { document } from "../utils/dynamodbClient";
 
 interface ICreateCertificate {
-    id: string;
-    name: string;
-    grade: string;
+  id: string;
+  name: string;
+  grade: string;
 }
 
 interface ITemplate {
-    id: string;
-    name: string;
-    grade: string;
-    date: string;
-    medal: string;
+  id: string;
+  name: string;
+  grade: string;
+  date: string;
+  medal: string;
 }
 
+const compile = async function (data: ITemplate) {
+  const filePath = path.join(
+    process.cwd(),
+    "src",
+    "templates",
+    "certificate.hbs"
+  );
 
-const compile = async function(data: ITemplate) {
-    const filePath = path.join(process.cwd(), "src", "templates", "certificate.hbs");
+  const html = fs.readFileSync(filePath, "utf-8");
 
-    const html = fs.readFileSync(filePath, "utf-8");
-
-    return handlebars.compile(html)(data);
-}
+  return handlebars.compile(html)(data);
+};
 
 export const handle = async (event) => {
-   const { id, grade, name } = JSON.parse(event.body) as ICreateCertificate;
+  const { id, grade, name } = JSON.parse(event.body) as ICreateCertificate;
 
-   await document.put({
+  const response = await document
+    .query({
+      TableName: "users_certificates",
+      KeyConditionExpression: "id = :id",
+      ExpressionAttributeValues: {
+        ":id": id,
+      },
+    })
+    .promise();
+
+  const userAlreadyExists = response.Items[0];
+
+  if (!userAlreadyExists) {
+    await document
+      .put({
         TableName: "users_certificates",
         Item: {
-            id,
-            name,
-            grade
-        }
-   }).promise();
+          id,
+          name,
+          grade,
+        },
+      })
+      .promise();
+  }
 
-   const medalPath = path.join(process.cwd(), "src", "templates", "selo.png");
-   const medal = fs.readFileSync(medalPath, "base64");
+  const medalPath = path.join(process.cwd(), "src", "templates", "selo.png");
+  const medal = fs.readFileSync(medalPath, "base64");
 
-   const data : ITemplate = {
-       date: dayjs().format("DD/MM/YYYY"),
-       grade,
-       name,
-       id,
-       medal
-   }
+  const data: ITemplate = {
+    date: dayjs().format("DD/MM/YYYY"),
+    grade,
+    name,
+    id,
+    medal,
+  };
 
-   const content = await compile(data);
+  const content = await compile(data);
 
-   const browser = await chromium.puppeteer.launch({
-       headless: true,
-       args: chromium.args,
-       defaultViewport: chromium.defaultViewport,
-       executablePath: await chromium.executablePath
-   });
+  const browser = await chromium.puppeteer.launch({
+    headless: true,
+    args: chromium.args,
+    defaultViewport: chromium.defaultViewport,
+    executablePath: await chromium.executablePath,
+  });
 
-   const page = await browser.newPage();
+  const page = await browser.newPage();
 
-   await page.setContent(content);
+  await page.setContent(content);
 
-   const pdf = await page.pdf({
-       format: "a4",
-       landscape: true,
-       path: process.env.IS_OFFLINE ? "certificate.pdf" : null,
-       printBackground: true,
-       preferCSSPageSize: true
-   });
+  const pdf = await page.pdf({
+    format: "a4",
+    landscape: true,
+    path: process.env.IS_OFFLINE ? "certificate.pdf" : null,
+    printBackground: true,
+    preferCSSPageSize: true,
+  });
 
-   await browser.close();
+  await browser.close();
 
-   const s3 = new S3();
+  const s3 = new S3();
 
-   await s3.putObject({
-       Bucket: "serverlesscertificatesignite",
-       Key: `${id}.pdf`,
-       ACL: "public-read",
-       Body: pdf,
-       ContentType: "application/pdf"
-   }).promise();
+  await s3
+    .putObject({
+      Bucket: "serverlesscertificatesignite",
+      Key: `${id}.pdf`,
+      ACL: "public-read",
+      Body: pdf,
+      ContentType: "application/pdf",
+    })
+    .promise();
 
-   return {
-        statusCode: 201,
-        body: JSON.stringify({
-            message: "Certificate created!"
-        }),
-        headers: {
-            "Content-type": "application/json"
-        }
-   }
-}
+  return {
+    statusCode: 201,
+    body: JSON.stringify({
+      message: "Certificate created!",
+    }),
+    headers: {
+      "Content-type": "application/json",
+    },
+  };
+};
